@@ -1,10 +1,10 @@
 package unique
 
 import (
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
 )
 
 var (
@@ -22,14 +22,14 @@ func TestNewID(t *testing.T) {
 	t.Parallel()
 
 	seen := map[ID]bool{}
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 100000; i++ {
 		id := NewID()
-		assert.False(t, id.Time().IsZero())
-		assert.NotZero(t, id.Entropy())
 
 		// Smoke-test reasonable entropy by checking for collisions. The chance
 		// of collision is less than (1/2)^80, so this test should be reliable.
-		assert.NotContains(t, seen, id)
+		if _, ok := seen[id]; ok {
+			t.Errorf("ID %s collided but high entropy should make this (nearly) impossible.", id)
+		}
 		seen[id] = true
 	}
 }
@@ -39,21 +39,18 @@ func TestSetTime(t *testing.T) {
 
 	var id ID
 	var zeroTime time.Time
-	assert.EqualError(t, id.SetTime(zeroTime), "id time out of range")
-	assert.Panics(t, func() { id.MustSetTime(zeroTime) })
+	assertEqualErr(t, "id time out of range", id.SetTime(zeroTime), "Zero time")
 
 	tooSoon := minTime.Add(-time.Millisecond)
-	assert.EqualError(t, id.SetTime(tooSoon), "id time out of range")
-	assert.Panics(t, func() { id.MustSetTime(tooSoon) })
+	assertEqualErr(t, "id time out of range", id.SetTime(tooSoon), "Time below minimum")
 
 	tooLate := maxTime.Add(time.Millisecond)
-	assert.EqualError(t, id.SetTime(tooLate), "id time out of range")
-	assert.Panics(t, func() { id.MustSetTime(tooLate) })
+	assertEqualErr(t, "id time out of range", id.SetTime(tooLate), "Time above maximum")
 
 	// These also exercise SetTime and MustSetTime.
-	assert.Equal(t, minTime, NewID().WithTime(minTime).Time())
-	assert.Equal(t, midTime, NewID().WithTime(midTime).Time())
-	assert.Equal(t, maxTime, NewID().WithTime(maxTime).Time())
+	assertEqual(t, minTime, NewID().WithTime(minTime).Time(), "Minimum time")
+	assertEqual(t, midTime, NewID().WithTime(midTime).Time(), "Arbitrary time")
+	assertEqual(t, maxTime, NewID().WithTime(maxTime).Time(), "Maximum time")
 }
 
 func TestSetEntropy(t *testing.T) {
@@ -73,29 +70,39 @@ func TestSetEntropy(t *testing.T) {
 	for _, tt := range tests {
 		id1 := NewID()
 		id2 := id1.WithEntropy(tt.Set)
-		assert.NotEqual(t, id1.Entropy(), id2.Entropy(), "WithEntropy should not change the source.")
-		assert.Equal(t, tt.Expect, id2.Entropy())
+		if reflect.DeepEqual(id1.Entropy(), id2.Entropy()) {
+			t.Error("WithEntropy should not change the receiver.")
+		}
+		assertEqual(t, tt.Expect, id2.Entropy(), "New ID's entropy should match set value.")
 
 		id1.SetEntropy(tt.Set)
-		assert.Equal(t, id2, id1)
+		assertEqual(t, id2, id1, "SetEntropy should change the receiver.")
 	}
 }
 
 func TestIsZero(t *testing.T) {
 	var id ID
-	assert.True(t, id.IsZero(), "Uninitialized ID should be zero.")
+	if !id.IsZero() {
+		t.Error("Uninitialized ID should be zero.")
+	}
 
 	id.MustSetTime(minTime)
 	id.SetEntropy(nil)
-	assert.True(t, id.IsZero(), "Explicitly zero ID should be zero.")
+	if !id.IsZero() {
+		t.Error("Explicitly zero ID should be zero.")
+	}
 
 	id = NewID()
 	id.MustSetTime(minTime)
-	assert.False(t, id.IsZero(), "Non-zero entropy should be non-zero ID.")
+	if id.IsZero() {
+		t.Error("Non-zero entropy should be non-zero ID.")
+	}
 
 	id = NewID()
 	id.SetEntropy(nil)
-	assert.False(t, id.IsZero(), "Non-zero time should be non-zero ID.")
+	if id.IsZero() {
+		t.Error("Non-zero time should be non-zero ID.")
+	}
 }
 
 func TestIDEncoding(t *testing.T) {
@@ -129,33 +136,74 @@ func TestIDEncoding(t *testing.T) {
 
 	for _, tt := range tests {
 		id := ID{}.WithTime(tt.Time).WithEntropy(tt.Entropy)
-		assert.Equal(t, tt.Binary, id)
+		assertEqual(t, tt.Binary, id, "Constructed form for %s (time %v and entropy %v)", tt.Text, tt.Time, tt.Entropy)
+		assertEqual(t, tt.Text, id.String(), "String() encoding")
 
 		// Test text encoding.
-		assert.Equal(t, tt.Text, id.String())
 		text, err := id.MarshalText()
-		if assert.NoError(t, err) {
-			assert.Equal(t, tt.Text, string(text))
+		if assertNoErr(t, err, "MarshalText should succeed") {
+			assertEqual(t, tt.Text, string(text), "Text encoding")
 		}
 
 		// Test text decoding.
 		var parsed ID
 		err = parsed.UnmarshalText([]byte(tt.Text))
-		if assert.NoError(t, err) {
-			assert.Equal(t, tt.Binary, parsed)
+		if assertNoErr(t, err, "UnmarshalText should succeed") {
+			assertEqual(t, tt.Binary, parsed, "Text decoding for %s", tt.Text)
 		}
 
 		// Test binary encoding.
 		b, err := id.MarshalBinary()
-		if assert.NoError(t, err) {
-			assert.Equal(t, tt.Binary[:], b)
+		if assertNoErr(t, err, "MarshalBinary should succeed") {
+			assertEqual(t, tt.Binary[:], b, "Binary encoding for %s", tt.Text)
 		}
 
 		// Test binary decoding.
 		var decoded ID
 		err = decoded.UnmarshalBinary(tt.Binary[:])
-		if assert.NoError(t, err) {
-			assert.Equal(t, tt.Binary, decoded)
+		if assertNoErr(t, err, "UnmarshalBinary should succeed") {
+			assertEqual(t, tt.Binary, decoded, "Binary decoding for %s", tt.Text)
 		}
 	}
+}
+
+func assertNoErr(t *testing.T, err error, message string, args ...interface{}) bool {
+	t.Helper()
+	if err == nil {
+		return true
+	}
+	t.Error(fmt.Sprintf(message, args...),
+		"\n    Error:", err)
+	return false
+}
+
+func assertEqualErr(
+	t *testing.T,
+	expect string,
+	actual error,
+	message string,
+	args ...interface{},
+) bool {
+	t.Helper()
+	if actual != nil {
+		return assertEqual(t, expect, actual.Error(), message, args...)
+	}
+	return assertEqual(t, expect, actual, message, args...)
+}
+
+func assertEqual(
+	t *testing.T,
+	expect interface{},
+	actual interface{},
+	message string,
+	args ...interface{},
+) bool {
+	t.Helper()
+	if reflect.DeepEqual(expect, actual) {
+		return true
+	}
+	t.Error(fmt.Sprintf(message, args...),
+		"\n    Expected:", expect,
+		"\n    Actual:  ", actual)
+	return false
 }

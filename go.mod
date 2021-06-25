@@ -1,8 +1,5 @@
 module github.com/beaker/unique
 
-go 1.12
+go 1.14
 
-require (
-	github.com/oklog/ulid v1.3.1
-	github.com/stretchr/testify v1.3.0
-)
+require github.com/oklog/ulid v1.3.1
